@@ -121,6 +121,7 @@ void SetNeoPixel(uint8_t Red, uint8_t Green, uint8_t Blue)
 void PrintMeasurementStatistics(MeasurementStatistics* Target, uint8_t Index, const char* Label)
 {
 	double TimeSpan  = Target->Stats.MaxX() - Target->Stats.MinX();
+	double Correlation = Target->Stats.Correlation();
 	Serial.print(Label);
 	Serial.print(",");
 	Serial.print(Index);
@@ -137,7 +138,7 @@ void PrintMeasurementStatistics(MeasurementStatistics* Target, uint8_t Index, co
 	Serial.print(",");
 	Serial.print(Target->Stats.Intercept(),4);
 	Serial.print(",");
-	Serial.print(Target->Stats.Correlation(),4);
+	Serial.print( (Correlation*Correlation) ,4);
 	Serial.print(",");
 	Serial.print(TimeSpan);
 	Serial.print("\n");
