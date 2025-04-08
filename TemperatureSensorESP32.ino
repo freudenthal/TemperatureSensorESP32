@@ -44,6 +44,14 @@ TextCommandParser Parser;
 uint8_t SampleCountMax = 32;
 uint32_t LastSampleCheck = 0;
 
+struct MeasurementStatistics
+{
+	float LastReadingTime;
+	float LastFlushTime;
+	float LastReading;
+	RunningRegression Stats;
+};
+
 Adafruit_BME280 BME0;
 Adafruit_BME280 BME1;
 Adafruit_BME280 BME2;
@@ -53,81 +61,35 @@ Adafruit_Sensor *BME0TempSensor = BME0.getTemperatureSensor();
 Adafruit_Sensor *BME1TempSensor = BME1.getTemperatureSensor();
 Adafruit_Sensor *BME2TempSensor = BME2.getTemperatureSensor();
 Adafruit_Sensor *BMETempSensors[] = {BME0TempSensor,BME1TempSensor,BME2TempSensor};
-float BME0TempLastReadingTime = 0.0;
-float BME1TempLastReadingTime = 0.0;
-float BME2TempLastReadingTime = 0.0;
-float* BMETempLastReadingTimes[] = {&BME0TempLastReadingTime, &BME1TempLastReadingTime, &BME2TempLastReadingTime};
-float BME0TempLastFlushTime = 0.0;
-float BME1TempLastFlushTime = 0.0;
-float BME2TempLastFlushTime = 0.0;
-float* BMETempLastFlushTimes[] = {&BME0TempLastFlushTime, &BME1TempLastFlushTime, &BME2TempLastFlushTime};
-float BME0TempLastReading = 0.0;
-float BME1TempLastReading = 0.0;
-float BME2TempLastReading = 0.0;
-float* BMETempLastReadings[] = {&BME0TempLastReading, &BME1TempLastReading, &BME2TempLastReading};
-RunningRegression BME0Temperature;
-RunningRegression BME1Temperature;
-RunningRegression BME2Temperature;
-RunningRegression* BMETemperatures[] = {&BME0Temperature, &BME1Temperature, &BME2Temperature};
+MeasurementStatistics BME0TempStat;
+MeasurementStatistics BME1TempStat;
+MeasurementStatistics BME2TempStat;
+MeasurementStatistics* BMETempStats[] = {&BME0TempStat,&BME1TempStat,&BME2TempStat};
 
 Adafruit_Sensor *BME0PresSensor = BME0.getPressureSensor();
 Adafruit_Sensor *BME1PresSensor = BME1.getPressureSensor();
 Adafruit_Sensor *BME2PresSensor = BME2.getPressureSensor();
 Adafruit_Sensor *BMEPresSensors[] = {BME0PresSensor,BME1PresSensor,BME2PresSensor};
-float BME0PresLastReadingTime = 0.0;
-float BME1PresLastReadingTime = 0.0;
-float BME2PresLastReadingTime = 0.0;
-float* BMEPresLastReadingTimes[] = {&BME0PresLastReadingTime, &BME1PresLastReadingTime, &BME2PresLastReadingTime};
-float BME0PresLastFlushTime = 0.0;
-float BME1PresLastFlushTime = 0.0;
-float BME2PresLastFlushTime = 0.0;
-float* BMEPresLastFlushTimes[] = {&BME0PresLastFlushTime, &BME1PresLastFlushTime, &BME2PresLastFlushTime};
-float BME0PresLastReading = 0.0;
-float BME1PresLastReading = 0.0;
-float BME2PresLastReading = 0.0;
-float* BMEPresLastReadings[] = {&BME0PresLastReading, &BME1PresLastReading, &BME2PresLastReading};
-RunningRegression BME0Pressure;
-RunningRegression BME1Pressure;
-RunningRegression BME2Pressure;
-RunningRegression* BMEPressures[] = {&BME0Pressure, &BME1Pressure, &BME2Pressure};
+MeasurementStatistics BME0PresStat;
+MeasurementStatistics BME1PresStat;
+MeasurementStatistics BME2PresStat;
+MeasurementStatistics* BMEPresStats[] = {&BME0PresStat,&BME1PresStat,&BME2PresStat};
 
 Adafruit_Sensor *BME0HumiSensor = BME0.getHumiditySensor();
 Adafruit_Sensor *BME1HumiSensor = BME1.getHumiditySensor();
 Adafruit_Sensor *BME2HumiSensor = BME2.getHumiditySensor();
 Adafruit_Sensor *BMEHumiSensors[] = {BME0HumiSensor,BME1HumiSensor,BME2HumiSensor};
-float BME0HumiLastReadingTime = 0.0;
-float BME1HumiLastReadingTime = 0.0;
-float BME2HumiLastReadingTime = 0.0;
-float* BMEHumiLastReadingTimes[] = {&BME0HumiLastReadingTime, &BME1HumiLastReadingTime, &BME2HumiLastReadingTime};
-float BME0HumiLastFlushTime = 0.0;
-float BME1HumiLastFlushTime = 0.0;
-float BME2HumiLastFlushTime = 0.0;
-float* BMEHumiLastFlushTimes[] = {&BME0HumiLastFlushTime, &BME1HumiLastFlushTime, &BME2HumiLastFlushTime};
-float BME0HumiLastReading = 0.0;
-float BME1HumiLastReading = 0.0;
-float BME2HumiLastReading = 0.0;
-float* BMEHumiLastReadings[] = {&BME0HumiLastReading, &BME1HumiLastReading, &BME2HumiLastReading};
-RunningRegression BME0Humidity;
-RunningRegression BME1Humidity;
-RunningRegression BME2Humidity;
-RunningRegression* BMEHumidities[] = {&BME0Humidity, &BME1Humidity, &BME2Humidity};
+MeasurementStatistics BME0HumiStat;
+MeasurementStatistics BME1HumiStat;
+MeasurementStatistics BME2HumiStat;
+MeasurementStatistics* BMEHumiStats[] = {&BME0HumiStat,&BME1HumiStat,&BME2HumiStat};
 
 Adafruit_TMP117 TMP0;
 Adafruit_TMP117 TMP1;
 Adafruit_TMP117* TMPSet[] = {&TMP0,&TMP1};
-
-float TMP0LastReadingTime = 0.0;
-float TMP1LastReadingTime = 0.0;
-float* TMPLastReadingTimes[] = {&TMP0LastReadingTime, &TMP1LastReadingTime};
-float TMP0LastReading = 0.0;
-float TMP1LastReading = 0.0;
-float* TMPLastReadings[] = {&TMP0LastReading, &TMP1LastReading};
-float TMP0LastFlushTime = 0.0;
-float TMP1LastFlushTime = 0.0;
-float* TMPLastFlushTimes[] = {&TMP0LastFlushTime, &TMP1LastFlushTime};
-RunningRegression TMP0Temperature;
-RunningRegression TMP1Temperature;
-RunningRegression* TMPTemperatures[] = {&TMP0Temperature, &TMP1Temperature};
+MeasurementStatistics TMP0Stat;
+MeasurementStatistics TMP1Stat;
+MeasurementStatistics* TMPStats[] = {&TMP0Stat,&TMP1Stat};
 
 void SetNeoPixelI2CPower(bool Enable)
 {
@@ -156,273 +118,88 @@ void SetNeoPixel(uint8_t Red, uint8_t Green, uint8_t Blue)
 	pixel.show();
 }
 
-void UpdateBMETemperature()
+void PrintMeasurementStatistics(MeasurementStatistics* Target, uint8_t Index, const char* Label)
 {
-	bool Status;
-	sensors_event_t SensorEvent;
-	float TempReading;
-	float TempTime;
-	float FlushTime;
-	double TimeSpan;
-	uint8_t ActiveChannel;
-	SetNeoPixel(128,0,0);
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<BMECount; I2CBusIndex++)
-	{
-		ActiveChannel = BMEBus[I2CBusIndex];
-		I2CMultiplexer.selectChannel(ActiveChannel);
-		Status = BMETempSensors[I2CBusIndex]->getEvent(&SensorEvent);
-		if (Status)
-		{
-			TempReading = SensorEvent.temperature;
-			if (TempReading != *BMETempLastReadings[I2CBusIndex])
-			{
-				FlushTime = (float)((*BMETempLastFlushTimes[I2CBusIndex]))/1000.0;
-				TempTime = ((float)(SensorEvent.timestamp)/1000.0) - FlushTime;
-				if (TempTime > 0.0)
-				{
-					*BMETempLastReadings[I2CBusIndex] = TempReading;
-					*BMETempLastReadingTimes[I2CBusIndex] = TempTime;
-					BMETemperatures[I2CBusIndex]->Push((double)TempTime,(double)TempReading);
-					if ( (BMETemperatures[I2CBusIndex]->NumDataValues() >= SampleCountMax) && (TempTime > 0.0) )
-					{
-						TimeSpan  = BMETemperatures[I2CBusIndex]->MaxX() - BMETemperatures[I2CBusIndex]->MinX();
-						Serial.print("BMETemp,");
-						Serial.print(I2CBusIndex);
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->MeanY());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->StandardDeviationY());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->MinY());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->MaxY());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->Slope());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->Intercept());
-						Serial.print(",");
-						Serial.print(BMETemperatures[I2CBusIndex]->Correlation());
-						Serial.print(",");
-						Serial.print(TimeSpan);
-						Serial.print("\n");
-						BMETemperatures[I2CBusIndex]->Clear();
-						*BMETempLastFlushTimes[I2CBusIndex] = millis();
-					}
-				}
-				//else
-				//{
-				//	Serial.print("BME Temp time error ");
-				//	Serial.print(TempTime);
-				//	Serial.print("\n");
-				//	BMETemperatures[I2CBusIndex]->Clear();
-				//	BMETempFlushTime = millis();
-				//}
-			}
-		}
-	}
-	SetNeoPixel(0,0,0);
+	double TimeSpan  = Target->Stats.MaxX() - Target->Stats.MinX();
+	Serial.print(Label);
+	Serial.print(",");
+	Serial.print(Index);
+	Serial.print(",");
+	Serial.print(Target->Stats.MeanY(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.StandardDeviationY(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.MinY(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.MaxY(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.Slope(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.Intercept(),4);
+	Serial.print(",");
+	Serial.print(Target->Stats.Correlation(),4);
+	Serial.print(",");
+	Serial.print(TimeSpan);
+	Serial.print("\n");
 }
 
-void UpdateBMEPressure()
+void UpdateWithNewReading(sensors_event_t SensorEvent, MeasurementStatistics* Target, uint8_t Index, const char* Label)
 {
-	bool Status;
-	sensors_event_t SensorEvent;
-	float TempReading;
-	float TempTime;
-	double TimeSpan;
-	float FlushTime;
-	uint8_t ActiveChannel;
-	SetNeoPixel(0,128,0);
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<BMECount; I2CBusIndex++)
+	float TemporaryReading = SensorEvent.temperature; //This doesn't matter, all are a union of float values
+	float EventTime = (float)(SensorEvent.timestamp)/1000.0;
+	float LastFlushTime = Target->LastFlushTime;
+	float LastReading = Target->LastReading;
+	float LastReadingTime = Target->LastReadingTime;
+	bool ReadingDifferent = TemporaryReading != LastReading;
+	float TemporaryTime = EventTime - LastFlushTime;
+	bool TimeValid = TemporaryTime > 0.0;
+	bool ReadingValid = !isnan(TemporaryReading);
+	if (ReadingDifferent && TimeValid && ReadingValid)
 	{
-		ActiveChannel = BMEBus[I2CBusIndex];
-		I2CMultiplexer.selectChannel(ActiveChannel);
-		Status = BMEPresSensors[I2CBusIndex]->getEvent(&SensorEvent);
-		if (Status)
+		Target->LastReading = TemporaryReading;
+		Target->LastReadingTime = TemporaryTime;
+		Target->Stats.Push((double)TemporaryTime,(double)TemporaryReading);
+		if (Target->Stats.NumDataValues() >= SampleCountMax)
 		{
-			TempReading = SensorEvent.pressure;
-			if (TempReading != *BMEPresLastReadings[I2CBusIndex])
-			{
-				FlushTime = (float)((*BMEPresLastFlushTimes[I2CBusIndex]))/1000.0;
-				TempTime = ((float)(SensorEvent.timestamp)/1000.0) - FlushTime;
-				if (TempTime > 0.0)
-				{
-					*BMEPresLastReadings[I2CBusIndex] = TempReading;
-					*BMEPresLastReadingTimes[I2CBusIndex] = TempTime;
-					BMEPressures[I2CBusIndex]->Push((double)TempTime,(double)TempReading);
-					if (BMEPressures[I2CBusIndex]->NumDataValues() >= SampleCountMax)
-					{
-						TimeSpan  = BMEPressures[I2CBusIndex]->MaxX() - BMEPressures[I2CBusIndex]->MinX();
-						Serial.print("BMEPres,");
-						Serial.print(I2CBusIndex);
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->MeanY());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->StandardDeviationY());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->MinY());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->MaxY());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->Slope());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->Intercept());
-						Serial.print(",");
-						Serial.print(BMEPressures[I2CBusIndex]->Correlation());
-						Serial.print(",");
-						Serial.print(TimeSpan);
-						Serial.print("\n");
-						BMEPressures[I2CBusIndex]->Clear();
-						*BMEPresLastFlushTimes[I2CBusIndex] = millis();
-					}
-				}
-				//else
-				//{
-				//	Serial.print("BME Pres time error ");
-				//	Serial.print(TempTime);
-				//	Serial.print("\n");
-				//	BMEPressures[I2CBusIndex]->Clear();
-				//	BMEPresFlushTime = millis();
-				//}
-			}
+			PrintMeasurementStatistics(Target, Index, Label);
+			Target->Stats.Clear();
+			Target->LastFlushTime = (float)(millis())/1000.0;
 		}
 	}
-	SetNeoPixel(0,0,0);
 }
 
-void UpdateBMEHumidity()
+void UpdateMeasurementStatistics(const uint8_t Bus[], Adafruit_Sensor* Sensors[], MeasurementStatistics* Stats[], uint8_t Count, const char* Label)
 {
 	bool Status;
 	sensors_event_t SensorEvent;
-	float TempReading;
-	float TempTime;
-	double TimeSpan;
-	float FlushTime;
 	uint8_t ActiveChannel;
-	SetNeoPixel(0,0,128);
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<BMECount; I2CBusIndex++)
+	for(uint8_t I2CBusIndex = 0; I2CBusIndex<Count; I2CBusIndex++)
 	{
-		ActiveChannel = BMEBus[I2CBusIndex];
+		ActiveChannel = Bus[I2CBusIndex];
 		I2CMultiplexer.selectChannel(ActiveChannel);
-		Status = BMEHumiSensors[I2CBusIndex]->getEvent(&SensorEvent);
+		Status = Sensors[I2CBusIndex]->getEvent(&SensorEvent);
 		if (Status)
 		{
-			TempReading = SensorEvent.relative_humidity;
-			if (TempReading != *BMEHumiLastReadings[I2CBusIndex])
-			{
-				FlushTime = (float)((*BMEHumiLastFlushTimes[I2CBusIndex]))/1000.0;
-				TempTime = ((float)(SensorEvent.timestamp)/1000.0) - FlushTime;
-				if (TempTime > 0.0)
-				{
-					*BMEHumiLastReadings[I2CBusIndex] = TempReading;
-					*BMEHumiLastReadingTimes[I2CBusIndex] = TempTime;
-					BMEHumidities[I2CBusIndex]->Push((double)TempTime,(double)TempReading);
-					if (BMEHumidities[I2CBusIndex]->NumDataValues() >= SampleCountMax)
-					{
-						TimeSpan  = BMEHumidities[I2CBusIndex]->MaxX() - BMEHumidities[I2CBusIndex]->MinX();
-						Serial.print("BMEHumi,");
-						Serial.print(I2CBusIndex);
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->MeanY());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->StandardDeviationY());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->MinY());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->MaxY());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->Slope());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->Intercept());
-						Serial.print(",");
-						Serial.print(BMEHumidities[I2CBusIndex]->Correlation());
-						Serial.print(",");
-						Serial.print(TimeSpan);
-						Serial.print("\n");
-						BMEHumidities[I2CBusIndex]->Clear();
-						*BMEHumiLastFlushTimes[I2CBusIndex] = millis();
-					}
-				}
-				//else
-				//{
-				//	Serial.print("BME Humi time error ");
-				//	Serial.print(TempTime);
-				//	Serial.print("\n");
-				//	BMEHumidities[I2CBusIndex]->Clear();
-				//	BMEHumiFlushTime = millis();
-				//}
-			}
+			UpdateWithNewReading(SensorEvent, Stats[I2CBusIndex], I2CBusIndex, Label);
 		}
 	}
-	SetNeoPixel(0,0,0);
 }
 
-void UpdateTMPTemperature()
+void UpdateMeasurementStatistics(const uint8_t Bus[], Adafruit_TMP117* Sensors[], MeasurementStatistics* Stats[], uint8_t Count, const char* Label)
 {
 	bool Status;
 	sensors_event_t SensorEvent;
-	float TempReading;
-	float TempTime;
-	double TimeSpan;
-	float FlushTime;
 	uint8_t ActiveChannel;
-	SetNeoPixel(128,0,128);
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<TMPCount; I2CBusIndex++)
+	for(uint8_t I2CBusIndex = 0; I2CBusIndex<Count; I2CBusIndex++)
 	{
-		ActiveChannel = TMPBus[I2CBusIndex];
+		ActiveChannel = Bus[I2CBusIndex];
 		I2CMultiplexer.selectChannel(ActiveChannel);
-		Status = TMPSet[I2CBusIndex]->getEvent(&SensorEvent);
+		Status = Sensors[I2CBusIndex]->getEvent(&SensorEvent);
 		if (Status)
 		{
-			TempReading = SensorEvent.temperature;
-			bool ReadingDifferent = TempReading != *TMPLastReadings[I2CBusIndex];
-			if (ReadingDifferent)
-			{
-				FlushTime = (float)( (*TMPLastFlushTimes[I2CBusIndex]) )/1000.0;
-				TempTime = ((float)(SensorEvent.timestamp)/1000.0) - FlushTime;
-				if (TempTime > 0.0)
-				{
-					*TMPLastReadings[I2CBusIndex] = TempReading;
-					*TMPLastReadingTimes[I2CBusIndex] = TempTime;
-					TMPTemperatures[I2CBusIndex]->Push((double)TempTime,(double)TempReading);
-					if (TMPTemperatures[I2CBusIndex]->NumDataValues() >= SampleCountMax)
-					{
-						TimeSpan  = TMPTemperatures[I2CBusIndex]->MaxX() - TMPTemperatures[I2CBusIndex]->MinX();
-						Serial.print("TMPTemp,");
-						Serial.print(I2CBusIndex);
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->MeanY());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->StandardDeviationY());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->MinY());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->MaxY());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->Slope());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->Intercept());
-						Serial.print(",");
-						Serial.print(TMPTemperatures[I2CBusIndex]->Correlation());
-						Serial.print(",");
-						Serial.print(TimeSpan);
-						Serial.print("\n");
-						TMPTemperatures[I2CBusIndex]->Clear();
-						*TMPLastFlushTimes[I2CBusIndex] = millis();
-					}
-				}
-				//else
-				//{
-				//	Serial.print("TMP Temp time error: ");
-				//	Serial.print(TempTime);
-				//	Serial.print("\n");
-				//	TMPTemperatures[I2CBusIndex]->Clear();
-				//	TMPTempFlushTime = millis();
-				//}
-			}
+			UpdateWithNewReading(SensorEvent, Stats[I2CBusIndex], I2CBusIndex, Label);
 		}
 	}
-	SetNeoPixel(0,0,0);
 }
 
 void ScanAllI2CChannels()
@@ -601,10 +378,15 @@ void CheckSamples()
 	if ( micros() - LastSampleCheck > SampleCheckMax )
 	{
 		LastSampleCheck = micros();
-		UpdateBMETemperature();
-		UpdateBMEPressure();
-		UpdateBMEHumidity();
-		UpdateTMPTemperature();
+		SetNeoPixel(255,0,0);
+		UpdateMeasurementStatistics(BMEBus, BMETempSensors, BMETempStats, BMECount, "BMETemp");
+		SetNeoPixel(0,255,0);
+		UpdateMeasurementStatistics(BMEBus, BMEPresSensors, BMEPresStats, BMECount, "BMEPres");
+		SetNeoPixel(0,0,255);
+		UpdateMeasurementStatistics(BMEBus, BMEHumiSensors, BMEHumiStats, BMECount, "BMEHumi");
+		SetNeoPixel(255,0,255);
+		UpdateMeasurementStatistics(TMPBus, TMPSet, TMPStats, TMPCount, "TMPTemp");
+		SetNeoPixel(0,0,0);
 	}
 }
 
