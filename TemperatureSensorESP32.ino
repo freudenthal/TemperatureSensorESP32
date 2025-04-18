@@ -9,6 +9,7 @@
 #include <RunningStats.h>
 #include <RunningRegression.h>
 #include <Adafruit_Sensor.h>
+#include <Adafruit_PCF8574.h>
 
 typedef CommandParser<16, 4, 32, 128, 255> TextCommandParser;
 
@@ -26,10 +27,14 @@ static const uint32_t SerialCheckMax = 100000;
 static const uint32_t BME280Address = 0x77;
 static const uint8_t BMECount = 3;
 static const uint8_t BMEBus[] = {0,1,2};
-static const uint32_t TMP117Address = 0x48;
-static const uint8_t TMPCount = 2;
-static const uint8_t TMPBus[] = {1,2};
 static const uint32_t SampleCheckMax = 100000;
+static const uint8_t PCF8574Address = 0x20;
+static const uint8_t IOExpanderChannel = 3;
+static const uint8_t FanPin = 4;
+static const uint8_t HeatPelterPin0 = 1;
+static const uint8_t HeatPelterPin1 = 3;
+static const uint8_t CoolPelterPin0 = 0;
+static const uint8_t CoolPelterPin1 = 2;
 
 uint8_t NeoPixelBrightness = 20;
 
@@ -43,14 +48,35 @@ PrintCharArray CommandResponse(TextCommandParser::MAX_RESPONSE_SIZE);
 TextCommandParser Parser;
 uint8_t SampleCountMax = 32;
 uint32_t LastSampleCheck = 0;
+uint8_t IOExpanderPins = 0;
+
+uint32_t PeltierCycleMaxTime = 100000;
+uint32_t PeltierLastTime = 0;
+uint32_t PeltierActiveTimeMax = 0;
+uint32_t PeltierStartTime = 0;
+float PeltierPowerSetting = 0.0;
+bool PeltierActive = false;
+bool PeltierCooling = false;
+bool PeltierCoolingNeeded = false;
 
 struct MeasurementStatistics
 {
 	float LastReadingTime;
 	float LastFlushTime;
 	float LastReading;
+	bool New;
+	double Mean;
+	double STD;
+	double Min;
+	double Max;
+	double Slope;
+	double Intercept;
+	double Correlation;
+	double Timespan;
 	RunningRegression Stats;
 };
+
+Adafruit_PCF8574 IOExpander;
 
 Adafruit_BME280 BME0;
 Adafruit_BME280 BME1;
@@ -84,13 +110,6 @@ MeasurementStatistics BME1HumiStat;
 MeasurementStatistics BME2HumiStat;
 MeasurementStatistics* BMEHumiStats[] = {&BME0HumiStat,&BME1HumiStat,&BME2HumiStat};
 
-Adafruit_TMP117 TMP0;
-Adafruit_TMP117 TMP1;
-Adafruit_TMP117* TMPSet[] = {&TMP0,&TMP1};
-MeasurementStatistics TMP0Stat;
-MeasurementStatistics TMP1Stat;
-MeasurementStatistics* TMPStats[] = {&TMP0Stat,&TMP1Stat};
-
 void SetNeoPixelI2CPower(bool Enable)
 {
 	pinMode(LEDPin, OUTPUT);
@@ -120,28 +139,29 @@ void SetNeoPixel(uint8_t Red, uint8_t Green, uint8_t Blue)
 
 void PrintMeasurementStatistics(MeasurementStatistics* Target, uint8_t Index, const char* Label)
 {
-	double TimeSpan  = Target->Stats.MaxX() - Target->Stats.MinX();
-	double Correlation = Target->Stats.Correlation();
 	Serial.print(Label);
 	Serial.print(",");
 	Serial.print(Index);
 	Serial.print(",");
-	Serial.print(Target->Stats.MeanY(),4);
+	Serial.print(Target->Mean,4);
 	Serial.print(",");
-	Serial.print(Target->Stats.StandardDeviationY(),4);
+	Serial.print(Target->STD,4);
 	Serial.print(",");
-	Serial.print(Target->Stats.MinY(),4);
+	Serial.print(Target->Min,4);
 	Serial.print(",");
-	Serial.print(Target->Stats.MaxY(),4);
+	Serial.print(Target->Max,4);
 	Serial.print(",");
-	Serial.print(Target->Stats.Slope(),4);
+	Serial.print(Target->Slope,4);
 	Serial.print(",");
-	Serial.print(Target->Stats.Intercept(),4);
+	Serial.print(Target->Intercept,4);
 	Serial.print(",");
-	Serial.print( (Correlation*Correlation) ,4);
+	Serial.print(Target->Correlation,4);
 	Serial.print(",");
-	Serial.print(TimeSpan);
+	Serial.print(Target->Timespan);
+	Serial.print(",");
+	Serial.print(Target->New);
 	Serial.print("\n");
+	Target->New = false;
 }
 
 void UpdateWithNewReading(sensors_event_t SensorEvent, MeasurementStatistics* Target, uint8_t Index, const char* Label)
@@ -162,9 +182,18 @@ void UpdateWithNewReading(sensors_event_t SensorEvent, MeasurementStatistics* Ta
 		Target->Stats.Push((double)TemporaryTime,(double)TemporaryReading);
 		if (Target->Stats.NumDataValues() >= SampleCountMax)
 		{
-			PrintMeasurementStatistics(Target, Index, Label);
+			Target->New = false;
+			Target->Mean = Target->Stats.MeanY();
+			Target->STD = Target->Stats.StandardDeviationY();
+			Target->Min = Target->Stats.MinY();
+			Target->Max = Target->Stats.MaxY();
+			Target->Slope = Target->Stats.Slope();
+			Target->Intercept = Target->Stats.Intercept();
+			Target->Correlation = Target->Stats.Correlation();
+			Target->Timespan = Target->Stats.MaxX() - Target->Stats.MinX();
 			Target->Stats.Clear();
 			Target->LastFlushTime = (float)(millis())/1000.0;
+			//PrintMeasurementStatistics(Target, Index, Label);
 		}
 	}
 }
@@ -186,21 +215,40 @@ void UpdateMeasurementStatistics(const uint8_t Bus[], Adafruit_Sensor* Sensors[]
 	}
 }
 
-void UpdateMeasurementStatistics(const uint8_t Bus[], Adafruit_TMP117* Sensors[], MeasurementStatistics* Stats[], uint8_t Count, const char* Label)
+void SetPeltierOff()
 {
-	bool Status;
-	sensors_event_t SensorEvent;
-	uint8_t ActiveChannel;
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<Count; I2CBusIndex++)
-	{
-		ActiveChannel = Bus[I2CBusIndex];
-		I2CMultiplexer.selectChannel(ActiveChannel);
-		Status = Sensors[I2CBusIndex]->getEvent(&SensorEvent);
-		if (Status)
-		{
-			UpdateWithNewReading(SensorEvent, Stats[I2CBusIndex], I2CBusIndex, Label);
-		}
-	}
+	IOExpanderPins = 0;
+	I2CMultiplexer.selectChannel(IOExpanderChannel);
+	IOExpander.digitalWriteByte(IOExpanderPins);
+	PeltierActive = false;
+}
+
+void SetPeltierCooling()
+{
+	IOExpanderPins = 0;
+	bitWrite(IOExpanderPins, FanPin, 1);
+	bitWrite(IOExpanderPins, HeatPelterPin0, 0);
+	bitWrite(IOExpanderPins, HeatPelterPin1, 0);
+	bitWrite(IOExpanderPins, CoolPelterPin0, 1);
+	bitWrite(IOExpanderPins, CoolPelterPin1, 1);
+	I2CMultiplexer.selectChannel(IOExpanderChannel);
+	IOExpander.digitalWriteByte(IOExpanderPins);
+	PeltierActive = true;
+	PeltierCooling = true;
+}
+
+void SetPeltierHeating()
+{
+	IOExpanderPins = 0;
+	bitWrite(IOExpanderPins, FanPin, 1);
+	bitWrite(IOExpanderPins, HeatPelterPin0, 1);
+	bitWrite(IOExpanderPins, HeatPelterPin1, 1);
+	bitWrite(IOExpanderPins, CoolPelterPin0, 0);
+	bitWrite(IOExpanderPins, CoolPelterPin1, 0);
+	I2CMultiplexer.selectChannel(IOExpanderChannel);
+	IOExpander.digitalWriteByte(IOExpanderPins);
+	PeltierActive = true;
+	PeltierCooling = false;
 }
 
 void ScanAllI2CChannels()
@@ -276,6 +324,36 @@ void ScanI2C()
 	}
 }
 
+void SetPeltierPower(float PeltierPowerToSet)
+{
+	PeltierPowerSetting = constrain(PeltierPowerToSet,-1.0,1.0);
+	if (PeltierPowerSetting == 0.0)
+	{
+		SetPeltierOff();
+		PeltierActiveTimeMax = 0;
+	}
+	else
+	{
+		PeltierCoolingNeeded = PeltierPowerSetting > 0.0;
+		float DutyCycle = abs(PeltierPowerSetting);
+		PeltierActiveTimeMax = (uint32_t)(DutyCycle * (float)(PeltierCycleMaxTime));
+		if (PeltierActiveTimeMax == 0)
+		{
+			SetPeltierOff();
+			PeltierPowerSetting = 0.0;
+		}
+		if (PeltierActiveTimeMax > PeltierCycleMaxTime)
+		{
+			PeltierActiveTimeMax = PeltierCycleMaxTime;
+		}
+		//Serial.print("Duty ");
+		//Serial.print(PeltierActiveTimeMax);
+		//Serial.print(" of ");
+		//Serial.print(PeltierCycleMaxTime);
+		//Serial.print("\n");
+	}
+}
+
 void CommandIdentify(TextCommandParser::Argument *args, char *response)
 {
 	CommandResponse.clear();
@@ -297,6 +375,40 @@ void CommandI2CBusScanAllChannels(TextCommandParser::Argument *args, char *respo
 	CommandResponse.print("I2C scan of all buses starting.");
 }
 
+void CommandPeltierOff(TextCommandParser::Argument *args, char *response)
+{
+	SetPeltierPower(0.0);
+	SetPeltierOff();
+	CommandResponse.clear();
+	CommandResponse.print("Peltier off.");
+}
+
+void CommandPeltierCool(TextCommandParser::Argument *args, char *response)
+{
+	SetPeltierPower(-1.0);
+	SetPeltierCooling();
+	CommandResponse.clear();
+	CommandResponse.print("Peltier cooling.");
+}
+
+void CommandPeltierHeat(TextCommandParser::Argument *args, char *response)
+{
+	SetPeltierPower(1.0);
+	SetPeltierHeating();
+	CommandResponse.clear();
+	CommandResponse.print("Peltier heating.");
+}
+
+void CommandSetPeltierPower(TextCommandParser::Argument *args, char *response)
+{
+	double PowerToSet = args[0].asDouble;
+	PowerToSet = constrain(PowerToSet,-1.0,1.0);
+	SetPeltierPower( (float)(PowerToSet) );
+	CommandResponse.clear();
+	CommandResponse.print("Peltier power set to ");
+	CommandResponse.print(PeltierPowerSetting);
+}
+
 void ClearLineBuffer()
 {
 	memset(LineBuffer, 0, sizeof(LineBuffer));
@@ -310,6 +422,10 @@ void BuildParser()
 	Parser.registerCommand("ID", "", &CommandIdentify);
 	Parser.registerCommand("I2CScan", "", &CommandI2CBusScan);
 	Parser.registerCommand("I2CScanAll", "", &CommandI2CBusScanAllChannels);
+	Parser.registerCommand("PeltierOff", "", &CommandPeltierOff);
+	Parser.registerCommand("PeltierCool", "", &CommandPeltierCool);
+	Parser.registerCommand("PeltierHeat", "", &CommandPeltierHeat);
+	Parser.registerCommand("PeltierPower", "d", &CommandSetPeltierPower);
 }
 
 void ProcessLineBuffer()
@@ -365,6 +481,34 @@ void ParseSerial()
 	}
 }
 
+void CheckPeltier()
+{
+	if ( (micros() - PeltierLastTime) > PeltierCycleMaxTime)
+	{
+		PeltierLastTime = micros();
+		if ( (PeltierActiveTimeMax > 0) & (!PeltierActive) )
+		{
+			if (PeltierCoolingNeeded)
+			{
+				SetPeltierCooling();
+			}
+			else
+			{
+				SetPeltierHeating();
+			}
+			PeltierStartTime = micros();
+		}
+	}
+	if ( (PeltierActive) & (PeltierActiveTimeMax < PeltierCycleMaxTime) )
+	{
+		if ( (micros() - PeltierStartTime) > PeltierActiveTimeMax)
+		{
+			PeltierStartTime = micros();
+			SetPeltierOff();
+		}
+	}
+}
+
 void CheckUSBSerial()
 {
 	if ( micros() - LastSerialCheck > SerialCheckMax )
@@ -385,8 +529,6 @@ void CheckSamples()
 		UpdateMeasurementStatistics(BMEBus, BMEPresSensors, BMEPresStats, BMECount, "BMEPres");
 		SetNeoPixel(0,0,255);
 		UpdateMeasurementStatistics(BMEBus, BMEHumiSensors, BMEHumiStats, BMECount, "BMEHumi");
-		SetNeoPixel(255,0,255);
-		UpdateMeasurementStatistics(TMPBus, TMPSet, TMPStats, TMPCount, "TMPTemp");
 		SetNeoPixel(0,0,0);
 	}
 }
@@ -424,20 +566,23 @@ void setup()
 			Adafruit_BME280::standby_duration::STANDBY_MS_0_5);
 	}
 	Serial.print("BME280 init complete.\n");
-	for(uint8_t I2CBusIndex = 0; I2CBusIndex<TMPCount; I2CBusIndex++)
-	{
-		ActiveChannel = TMPBus[I2CBusIndex];
-		I2CMultiplexer.selectChannel(ActiveChannel);
-		TMPSet[I2CBusIndex]->begin(TMP117Address,&Wire);
-		TMPSet[I2CBusIndex]->setAveragedSampleCount(tmp117_average_count_t::TMP117_AVERAGE_1X);
-		TMPSet[I2CBusIndex]->setMeasurementMode(tmp117_mode_t::TMP117_MODE_CONTINUOUS);
-	}
-	Serial.print("TMP117 init complete.\n");
+	Serial.print("Setting up IO expander.\n");
+	I2CMultiplexer.selectChannel(IOExpanderChannel);
+	IOExpander.begin(PCF8574Address, &Wire);
+	IOExpander.pinMode(FanPin,OUTPUT);
+	IOExpander.pinMode(HeatPelterPin0,OUTPUT);
+	IOExpander.pinMode(HeatPelterPin1,OUTPUT);
+	IOExpander.pinMode(CoolPelterPin0,OUTPUT);
+	IOExpander.pinMode(CoolPelterPin1,OUTPUT);
+	IOExpander.digitalWriteByte(IOExpanderPins);
+	Serial.print("IO expander setup complete.\n");
 	SetStatusLED(false);
+	Serial.print("Boot finished.\n");
 }
 
 void loop()
 {
 	CheckUSBSerial();
 	CheckSamples();
+	CheckPeltier();
 }
