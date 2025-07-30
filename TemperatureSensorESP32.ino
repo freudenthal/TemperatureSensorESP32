@@ -10,8 +10,9 @@
 #include <RunningRegression.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_PCF8574.h>
+#include <Adafruit_MCP4725.h>
 
-typedef CommandParser<16, 4, 32, 128, 255> TextCommandParser;
+typedef CommandParser<32, 4, 32, 128, 255> TextCommandParser;
 
 static const uint32_t USBSerialRate = 115200;
 static const uint32_t I2CRate = 100000;
@@ -35,6 +36,10 @@ static const uint8_t HeatPelterPin0 = 1;
 static const uint8_t HeatPelterPin1 = 3;
 static const uint8_t CoolPelterPin0 = 0;
 static const uint8_t CoolPelterPin1 = 2;
+static const uint8_t ADCAddress = 0x62;
+static const uint8_t ADCBus = 3;
+static const uint32_t TMP117Address = 0x48;
+static const uint8_t TMP0Bus = 1;
 
 uint8_t NeoPixelBrightness = 20;
 
@@ -59,6 +64,27 @@ bool PeltierActive = false;
 bool PeltierCooling = false;
 bool PeltierCoolingNeeded = false;
 
+uint16_t ADCMaximumValue = 4095;
+uint16_t ADCMinimumValue = 0;
+uint16_t ADCSetting = 4095;
+
+uint8_t PIDTemperatureSensor = 1;
+bool PIDActive = false;
+bool PIDVerbose = false;
+float PIDSetPoint = 25.0;
+float PIDIntegral = 0.0;
+float PIDDeadband = 0.05;
+float PIDLastError = 0.0;
+float PIDLastTemperature = 0.0;
+float PIDBangBangThreshold = 3.0;
+uint32_t PIDLastCheck = 0;
+uint32_t PIDCheckTimeMax = 10000;
+float PIDKp = 1.0;
+float PIDKi = 0.0;
+float PIDKd = 0.0;
+float PIDOutputMax = 0.8;
+float PIDOutputMin = -0.3;
+
 struct MeasurementStatistics
 {
 	float LastReadingTime;
@@ -77,6 +103,8 @@ struct MeasurementStatistics
 };
 
 Adafruit_PCF8574 IOExpander;
+Adafruit_MCP4725 ADCController;
+Adafruit_TMP117 TMP0;
 
 Adafruit_BME280 BME0;
 Adafruit_BME280 BME1;
@@ -160,6 +188,8 @@ void PrintMeasurementStatistics(MeasurementStatistics* Target, uint8_t Index, co
 	Serial.print(Target->Timespan);
 	Serial.print(",");
 	Serial.print(Target->New);
+	Serial.print(",");
+	Serial.print(Target->LastFlushTime);
 	Serial.print("\n");
 	Target->New = false;
 }
@@ -182,7 +212,7 @@ void UpdateWithNewReading(sensors_event_t SensorEvent, MeasurementStatistics* Ta
 		Target->Stats.Push((double)TemporaryTime,(double)TemporaryReading);
 		if (Target->Stats.NumDataValues() >= SampleCountMax)
 		{
-			Target->New = false;
+			Target->New = true;
 			Target->Mean = Target->Stats.MeanY();
 			Target->STD = Target->Stats.StandardDeviationY();
 			Target->Min = Target->Stats.MinY();
@@ -324,6 +354,13 @@ void ScanI2C()
 	}
 }
 
+void SetADC(uint16_t ValueToSet, bool PushToEEPROM = false)
+{
+	I2CMultiplexer.selectChannel(ADCBus);
+	ADCController.setVoltage(ValueToSet,PushToEEPROM,100000);
+	ADCSetting = ValueToSet;
+}
+
 void SetPeltierPower(float PeltierPowerToSet)
 {
 	PeltierPowerSetting = constrain(PeltierPowerToSet,-1.0,1.0);
@@ -331,27 +368,142 @@ void SetPeltierPower(float PeltierPowerToSet)
 	{
 		SetPeltierOff();
 		PeltierActiveTimeMax = 0;
+		SetADC(0);
 	}
 	else
 	{
-		PeltierCoolingNeeded = PeltierPowerSetting > 0.0;
-		float DutyCycle = abs(PeltierPowerSetting);
-		PeltierActiveTimeMax = (uint32_t)(DutyCycle * (float)(PeltierCycleMaxTime));
-		if (PeltierActiveTimeMax == 0)
-		{
-			SetPeltierOff();
-			PeltierPowerSetting = 0.0;
-		}
-		if (PeltierActiveTimeMax > PeltierCycleMaxTime)
-		{
-			PeltierActiveTimeMax = PeltierCycleMaxTime;
-		}
+		PeltierCoolingNeeded = PeltierPowerSetting < 0.0;
+		PeltierActiveTimeMax = PeltierCycleMaxTime;
+		float PercentagePower = abs(PeltierPowerSetting);
+		uint16_t ADCValueToSet = (uint16_t)(ADCMaximumValue - ( ( (float)(ADCMaximumValue - ADCMinimumValue) )*PercentagePower ));
+		ADCValueToSet = constrain(ADCValueToSet,ADCMinimumValue,ADCMaximumValue);
+		SetADC(ADCValueToSet);
+		//float DutyCycle = abs(PeltierPowerSetting);
+		//PeltierActiveTimeMax = (uint32_t)(DutyCycle * (float)(PeltierCycleMaxTime));
+		//if (PeltierActiveTimeMax == 0)
+		//{
+		//	SetPeltierOff();
+		//	PeltierPowerSetting = 0.0;
+		//}
+		//if (PeltierActiveTimeMax > PeltierCycleMaxTime)
+		//{
+		//	PeltierActiveTimeMax = PeltierCycleMaxTime;
+		//}
 		//Serial.print("Duty ");
 		//Serial.print(PeltierActiveTimeMax);
 		//Serial.print(" of ");
 		//Serial.print(PeltierCycleMaxTime);
 		//Serial.print("\n");
 	}
+}
+
+void SetPeltierRanged(float Setting)
+{
+	if (Setting < 0.0)
+	{
+		SetPeltierCooling();
+	}
+	else
+	{
+		SetPeltierHeating();
+	}
+	SetPeltierPower(abs(Setting));
+}
+
+void UpdatePID()
+{
+	if (PIDActive && (millis() - PIDLastCheck > PIDCheckTimeMax) )
+	{
+		uint32_t MillisNow = millis();
+		float DeltaTime = (MillisNow - PIDLastCheck)/1000.0;
+		if (DeltaTime < 0.0)
+		{
+			return;
+		}
+		PIDLastCheck = MillisNow;
+		float CurrentTemperature = (float)(BMETempStats[PIDTemperatureSensor]->Mean);
+		float Error = PIDSetPoint - CurrentTemperature;
+		PIDLastTemperature = CurrentTemperature;
+		if (abs(Error) > PIDBangBangThreshold)
+		{
+			float OutputSetting = (Error > 0.0) ? PIDOutputMax : PIDOutputMin;
+			SetPeltierRanged(OutputSetting);
+			if (PIDVerbose)
+			{
+				CommandResponse.clear();
+				CommandResponse.print("PID bang-bang mode. Temp: ");
+				CommandResponse.print(CurrentTemperature);
+				CommandResponse.print("C, Error: ");
+				CommandResponse.print(Error);
+				CommandResponse.print(", Output: ");
+				CommandResponse.print(OutputSetting);
+				CommandResponse.print("\n");
+				Serial.write(CommandResponse.getBuffer(), CommandResponse.size());
+			}
+			return;
+		}
+		if (abs(Error) < PIDDeadband)
+		{
+			SetPeltierOff();
+			PIDIntegral = 0.0;
+			if (PIDVerbose)
+			{
+				CommandResponse.clear();
+				CommandResponse.print("PID deadband mode. Temp: ");
+				CommandResponse.print(CurrentTemperature);
+				CommandResponse.print("C, Error: ");
+				CommandResponse.print(Error);
+				CommandResponse.print(", Output: Off\n");
+				Serial.write(CommandResponse.getBuffer(), CommandResponse.size());
+			}
+			return;
+		}
+		float P = PIDKp * Error;
+		float PIDIntegral = PIDIntegral + Error * DeltaTime;
+		float I = PIDKi * PIDIntegral;
+		float PIDDerivative = (Error - PIDLastError) / DeltaTime;
+		float D = PIDKd * PIDDerivative;
+		PIDLastError = Error;
+		float OutputSetting = P + I + D;
+		if (OutputSetting > PIDOutputMax)
+		{
+			OutputSetting = PIDOutputMax;
+		}
+		if (OutputSetting < PIDOutputMin)
+		{
+			OutputSetting = PIDOutputMin;
+		}
+		SetPeltierRanged(OutputSetting);
+		if (PIDVerbose)
+		{
+			CommandResponse.clear();
+			CommandResponse.print("PID loop. Temp: ");
+			CommandResponse.print(CurrentTemperature);
+			CommandResponse.print("C, Error: ");
+			CommandResponse.print(Error);
+			CommandResponse.print(", P: ");
+			CommandResponse.print(P);
+			CommandResponse.print(", I: ");
+			CommandResponse.print(I);
+			CommandResponse.print(", D: ");
+			CommandResponse.print(D);
+			CommandResponse.print(", Output: ");
+			CommandResponse.print(OutputSetting);
+			CommandResponse.print("\n");
+			Serial.write(CommandResponse.getBuffer(),CommandResponse.size());
+		}
+	}
+}
+
+float GetTMPTemperature()
+{
+	uint8_t Status;
+	float Reading = NAN;
+	sensors_event_t SensorEvent;
+	I2CMultiplexer.selectChannel(TMP0Bus);
+	Status = TMP0.getEvent(&SensorEvent);
+	Reading = SensorEvent.temperature;
+	return Reading;
 }
 
 void CommandIdentify(TextCommandParser::Argument *args, char *response)
@@ -409,6 +561,181 @@ void CommandSetPeltierPower(TextCommandParser::Argument *args, char *response)
 	CommandResponse.print(PeltierPowerSetting);
 }
 
+void CommandGetTemperature(TextCommandParser::Argument *args, char *response)
+{
+	uint8_t IndexToGet = constrain(args[0].asUInt64,0,BMECount);
+	PrintMeasurementStatistics(BMETempStats[IndexToGet],IndexToGet,"Temperature");
+	CommandResponse.clear();
+}
+
+void CommandGetPressure(TextCommandParser::Argument *args, char *response)
+{
+	uint8_t IndexToGet = constrain(args[0].asUInt64,0,BMECount);
+	PrintMeasurementStatistics(BMEHumiStats[IndexToGet],IndexToGet,"Humidity");
+	CommandResponse.clear();
+}
+
+void CommandGetHumidity(TextCommandParser::Argument *args, char *response)
+{
+	uint8_t IndexToGet = constrain(args[0].asUInt64,0,BMECount);
+	PrintMeasurementStatistics(BMEPresStats[IndexToGet],IndexToGet,"Pressure");
+	CommandResponse.clear();
+}
+
+void CommandSetADC(TextCommandParser::Argument *args, char *response)
+{
+	uint16_t ValueToSet = (uint16_t)(constrain(args[0].asUInt64,0,65535));
+	SetADC(ValueToSet);
+	CommandResponse.clear();
+	CommandResponse.print("ADC set to ");
+	CommandResponse.print(ValueToSet);
+}
+
+void CommandGetADC(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("ADC set to ");
+	CommandResponse.print(ADCSetting);
+}
+
+void CommandGetAirTemperature(TextCommandParser::Argument *args, char *response)
+{
+	float Temperature = GetTMPTemperature();
+	CommandResponse.clear();
+	CommandResponse.print("Air temperature ");
+	CommandResponse.print(Temperature);
+	CommandResponse.print("C.");
+}
+
+void CommandSetPIDActive(TextCommandParser::Argument *args, char *response)
+{
+	PIDActive = (args[0].asUInt64 == 1) ? true : false;
+	CommandResponse.clear();
+	CommandResponse.print("PID loop ");
+	CommandResponse.print(PIDActive ? "enabled" : "disabled");
+}
+
+// Set PID Kp
+void CommandSetPIDKp(TextCommandParser::Argument *args, char *response)
+{
+	PIDKp = args[0].asDouble;
+	CommandResponse.clear();
+	CommandResponse.print("Kp set to ");
+	CommandResponse.print(PIDKp);
+}
+
+// Get PID Kp
+void CommandGetPIDKp(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("Kp = ");
+	CommandResponse.print(PIDKp);
+}
+
+// Set PID Ki
+void CommandSetPIDKi(TextCommandParser::Argument *args, char *response)
+{
+	PIDKi = args[0].asDouble;
+	CommandResponse.clear();
+	CommandResponse.print("Ki set to ");
+	CommandResponse.print(PIDKi);
+}
+
+// Get PID Ki
+void CommandGetPIDKi(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("Ki = ");
+	CommandResponse.print(PIDKi);
+}
+
+// Set PID Kd
+void CommandSetPIDKd(TextCommandParser::Argument *args, char *response)
+{
+	PIDKd = args[0].asDouble;
+	CommandResponse.clear();
+	CommandResponse.print("Kd set to ");
+	CommandResponse.print(PIDKd);
+}
+
+// Get PID Kd
+void CommandGetPIDKd(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("Kd = ");
+	CommandResponse.print(PIDKd);
+}
+
+// Set PID update interval (in milliseconds)
+void CommandSetPIDUpdateRate(TextCommandParser::Argument *args, char *response)
+{
+	PIDCheckTimeMax = (uint32_t)( (args[0].asDouble) * 1000.0);
+	CommandResponse.clear();
+	CommandResponse.print("PID update interval set to ");
+	CommandResponse.print(PIDCheckTimeMax);
+	CommandResponse.print(" ms");
+}
+
+// Get PID update interval
+void CommandGetPIDUpdateRate(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("PID update interval = ");
+	CommandResponse.print(PIDCheckTimeMax);
+	CommandResponse.print(" ms");
+}
+
+// Set PID verbosity
+void CommandSetPIDVerbose(TextCommandParser::Argument *args, char *response)
+{
+	PIDVerbose = (args[0].asUInt64 == 1) ? true : false;
+	CommandResponse.clear();
+	CommandResponse.print("PID verbosity ");
+	CommandResponse.print(PIDVerbose ? "enabled" : "disabled");
+}
+
+// Get PID verbosity
+void CommandGetPIDVerbose(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("PID verbosity = ");
+	CommandResponse.print(PIDVerbose ? "enabled" : "disabled");
+}
+
+// Set PID bang range
+void CommandSetPIDBangRange(TextCommandParser::Argument *args, char *response)
+{
+	PIDBangBangThreshold = abs(args[0].asDouble);
+	CommandResponse.clear();
+	CommandResponse.print("PID bang range ");
+	CommandResponse.print(PIDBangBangThreshold);
+}
+
+// Get PID bang range
+void CommandGetPIDBangRange(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("PID bang range ");
+	CommandResponse.print(PIDBangBangThreshold);
+}
+
+// Set PID set point
+void CommandSetPIDSetPoint(TextCommandParser::Argument *args, char *response)
+{
+	PIDSetPoint = abs(args[0].asDouble);
+	CommandResponse.clear();
+	CommandResponse.print("PID set point ");
+	CommandResponse.print(PIDSetPoint);
+}
+
+// Get PID set point
+void CommandGetPIDSetPoint(TextCommandParser::Argument *args, char *response)
+{
+	CommandResponse.clear();
+	CommandResponse.print("PID set point ");
+	CommandResponse.print(PIDSetPoint);
+}
+
 void ClearLineBuffer()
 {
 	memset(LineBuffer, 0, sizeof(LineBuffer));
@@ -426,6 +753,27 @@ void BuildParser()
 	Parser.registerCommand("PeltierCool", "", &CommandPeltierCool);
 	Parser.registerCommand("PeltierHeat", "", &CommandPeltierHeat);
 	Parser.registerCommand("PeltierPower", "d", &CommandSetPeltierPower);
+	Parser.registerCommand("Temperature", "u", &CommandGetTemperature);
+	Parser.registerCommand("Pressure", "u", &CommandGetPressure);
+	Parser.registerCommand("Humidity", "u", &CommandGetHumidity);
+	Parser.registerCommand("ADC", "u", &CommandSetADC);
+	Parser.registerCommand("ADC?", "", &CommandGetADC);
+	Parser.registerCommand("Air", "", &CommandGetAirTemperature);
+	Parser.registerCommand("PIDActive", "u", &CommandSetPIDActive);
+	Parser.registerCommand("PIDKp", "d", &CommandSetPIDKp);
+	Parser.registerCommand("PIDKp?", "", &CommandGetPIDKp);
+	Parser.registerCommand("PIDKi", "d", &CommandSetPIDKi);
+	Parser.registerCommand("PIDKi?", "", &CommandGetPIDKi);
+	Parser.registerCommand("PIDKd", "d", &CommandSetPIDKd);
+	Parser.registerCommand("PIDKd?", "", &CommandGetPIDKd);
+	Parser.registerCommand("PIDUpdate", "d", &CommandSetPIDUpdateRate);
+	Parser.registerCommand("PIDUpdate?", "", &CommandGetPIDUpdateRate);
+	Parser.registerCommand("PIDVerbose", "u", &CommandSetPIDVerbose);
+	Parser.registerCommand("PIDVerbose?", "", &CommandGetPIDVerbose);
+	Parser.registerCommand("PIDBangRange", "d", &CommandSetPIDBangRange);
+	Parser.registerCommand("PIDBangRange?", "", &CommandGetPIDBangRange);
+	Parser.registerCommand("PIDSetPoint", "d", &CommandSetPIDSetPoint);
+	Parser.registerCommand("PIDSetPoint?", "", &CommandGetPIDSetPoint);
 }
 
 void ProcessLineBuffer()
@@ -576,6 +924,16 @@ void setup()
 	IOExpander.pinMode(CoolPelterPin1,OUTPUT);
 	IOExpander.digitalWriteByte(IOExpanderPins);
 	Serial.print("IO expander setup complete.\n");
+	Serial.print("ADC setup starting.\n");
+	I2CMultiplexer.selectChannel(ADCBus);
+	ADCController.begin(ADCAddress, &Wire);
+	ADCController.setVoltage(ADCMaximumValue,false,100000);
+	Serial.print("ADC setup complete.\n");
+	Serial.print("Setting up TMP0\n");
+	I2CMultiplexer.selectChannel(TMP0Bus);
+	TMP0.begin(TMP117Address,&Wire);
+	TMP0.setAveragedSampleCount(tmp117_average_count_t::TMP117_AVERAGE_1X);
+	TMP0.setMeasurementMode(tmp117_mode_t::TMP117_MODE_CONTINUOUS);
 	SetStatusLED(false);
 	Serial.print("Boot finished.\n");
 }
@@ -585,4 +943,5 @@ void loop()
 	CheckUSBSerial();
 	CheckSamples();
 	CheckPeltier();
+	UpdatePID();
 }
